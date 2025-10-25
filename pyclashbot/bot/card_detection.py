@@ -4317,12 +4317,22 @@ def get_card_group(card_id) -> str:
     return CARD_TO_GROUP.get(card_id, "No group")
 
 
-def get_play_coords_for_card(emulator, logger, card_index, elapsed_time: float = 0):
+def get_play_coords_for_card(
+    emulator,
+    logger,
+    card_index,
+    elapsed_time: float = 0,
+    card_identity: str | None = None,
+):
     # get the ID of this card(ram_rider, zap, etc)
-    id_cards_start_time = time.time()
-    identity = identify_hand_cards(emulator, card_index)
-    time_taken = str(time.time() - id_cards_start_time)[:3]
-    logger.change_status(f"Identified card as {identity} ({time_taken}s)")
+    if card_identity is None:
+        id_cards_start_time = time.time()
+        identity = identify_hand_cards(emulator, card_index)
+        time_taken = str(time.time() - id_cards_start_time)[:3]
+        logger.change_status(f"Identified card as {identity} ({time_taken}s)")
+    else:
+        identity = card_identity
+        logger.change_status(f"Using cached identity for {identity}")
 
     # get the grouping of this card (hog, turret, spell, etc)
     group = get_card_group(identity)

@@ -8,7 +8,9 @@ from typing import Literal
 from pyclashbot.bot.card_detection import (
     check_which_cards_are_available,
     create_default_bridge_iar,
+    get_card_group,
     get_play_coords_for_card,
+    identify_hand_cards,
     switch_side,
 )
 from pyclashbot.bot.nav import (
@@ -487,30 +489,114 @@ def get_to_main_after_fight(emulator, logger):
 
 # main fight loops
 
-# Initialize a deque with a maximum length of 3 to store the last three chosen cards
+# Initialize a deque with a maximum length of 3 to store the last three card identities
 last_three_cards = collections.deque(maxlen=3)
 
 
-def select_card_index(card_indices, last_three_cards):
+WIN_CONDITION_GROUPS = {
+    "hog",
+    "bigboi",
+    "big_win_con",
+    "miner",
+    "goblin_barrel",
+    "goblin_drill",
+    "graveyard",
+    "xbow",
+}
+
+SUPPORT_GROUPS = {
+    "spawner",
+    "princess",
+    "long_range",
+    "turret",
+}
+
+SPELL_GROUPS = {
+    "earthquake",
+    "fireball",
+    "freeze",
+    "poison",
+    "arrows",
+    "snowball",
+    "zap",
+    "rocket",
+    "lightning",
+    "log",
+    "tornado",
+}
+
+
+def _classify_group(group: str) -> str:
+    if group in WIN_CONDITION_GROUPS:
+        return "win_condition"
+    if group in SUPPORT_GROUPS:
+        return "support"
+    if group in SPELL_GROUPS:
+        return "spell"
+    if group and group != "No group":
+        return "flex"
+    return "unknown"
+
+
+def _score_card(candidate, battle_phase: str) -> float:
+    role = _classify_group(candidate["group"])
+    base_scores = {
+        "win_condition": 4.0,
+        "support": 2.5,
+        "spell": 1.4,
+        "flex": 2.2,
+        "unknown": 1.8,
+    }
+    score = base_scores.get(role, 1.8)
+
+    if candidate["card_id"] in last_three_cards and candidate["card_id"] != "UNKNOWN":
+        score -= 1.1
+
+    if role == "spell":
+        if battle_phase == "early":
+            score -= 1.2
+        elif battle_phase == "single":
+            score -= 0.3
+    elif role == "support" and battle_phase == "early":
+        score -= 0.2
+
+    if role == "win_condition" and battle_phase in {"double", "triple"}:
+        score += 0.4
+
+    if candidate["card_id"] == "UNKNOWN":
+        score -= 0.6
+
+    score += random.uniform(0, 0.25)
+
+    return score
+
+
+def select_card_candidate(emulator, logger, card_indices, battle_phase: str):
     if not card_indices:
         raise ValueError("card_indices cannot be empty")
 
-    # First preference: Cards not in the last_three_cards queue
-    preferred_cards = [index for index in card_indices if index not in last_three_cards]
+    candidates = []
+    for index in card_indices:
+        card_id = identify_hand_cards(emulator, index)
+        group = get_card_group(card_id)
+        candidate = {
+            "index": index,
+            "card_id": card_id,
+            "group": group,
+        }
+        candidate["score"] = _score_card(candidate, battle_phase)
+        candidates.append(candidate)
 
-    # Second preference: Cards not among the last two added to the queue
-    if not preferred_cards and len(last_three_cards) == 3:
-        preferred_cards = [index for index in card_indices if index not in list(last_three_cards)[-2:]]
+    decision_summary = ", ".join(
+        f"{c['card_id']}:{c['score']:.2f}" for c in candidates
+    )
+    logger.change_status(f"Card scores ({battle_phase}): {decision_summary}")
 
-    # Third preference: Any card except the most recently added one
-    if not preferred_cards and last_three_cards:
-        preferred_cards = [index for index in card_indices if index != last_three_cards[-1]]
-
-    # Fallback: If all else fails, consider all cards
-    if not preferred_cards:
-        preferred_cards = card_indices
-
-    return random.choice(preferred_cards)
+    best_candidate = max(candidates, key=lambda c: c["score"])
+    logger.change_status(
+        f"Selected card {best_candidate['card_id']} with score {best_candidate['score']:.2f}",
+    )
+    return best_candidate
 
 
 def play_a_card(emulator, logger, recording_flag: bool, battle_strategy: "BattleStrategy") -> bool:
@@ -533,14 +619,24 @@ def play_a_card(emulator, logger, recording_flag: bool, battle_strategy: "Battle
         f"These cards are available: {card_indicies} ({available_card_check_time_taken}s)",
     )
 
-    card_index = select_card_index(card_indicies, last_three_cards)
-    if card_index not in last_three_cards:
-        last_three_cards.append(card_index)
+    battle_phase = battle_strategy.get_battle_phase()
+    candidate = select_card_candidate(emulator, logger, card_indicies, battle_phase)
+
+    card_index = candidate["index"]
+    card_id = candidate["card_id"]
     logger.change_status(f"Choosing this card index: {card_index}")
+    if card_id != "UNKNOWN":
+        last_three_cards.append(card_id)
 
     # get a coord based on the selected side
     play_coord_calculation_start_time = time.time()
-    card_id, play_coord = get_play_coords_for_card(emulator, logger, card_index, battle_strategy.get_elapsed_time())
+    card_id, play_coord = get_play_coords_for_card(
+        emulator,
+        logger,
+        card_index,
+        battle_strategy.get_elapsed_time(),
+        card_identity=card_id if card_id != "UNKNOWN" else None,
+    )
     play_coord_calculation_time_taken = str(
         time.time() - play_coord_calculation_start_time,
     )[:3]
