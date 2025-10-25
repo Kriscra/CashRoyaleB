@@ -105,6 +105,88 @@ PLAY_COORDS = {
     },
 }
 
+GROUP_ROLES: dict[str, str] = {
+    "hog": "win_condition",
+    "bigboi": "win_condition",
+    "big_win_con": "win_condition",
+    "miner": "win_condition",
+    "goblin_barrel": "win_condition",
+    "goblin_drill": "win_condition",
+    "graveyard": "win_condition",
+    "xbow": "win_condition",
+    "spawner": "support",
+    "princess": "support",
+    "long_range": "support",
+    "turret": "support",
+    "earthquake": "spell",
+    "fireball": "spell",
+    "freeze": "spell",
+    "poison": "spell",
+    "arrows": "spell",
+    "snowball": "spell",
+    "zap": "spell",
+    "rocket": "spell",
+    "lightning": "spell",
+    "log": "spell",
+    "tornado": "spell",
+}
+
+ROLE_ZONE_PREFERENCES: dict[str, dict[str, list[str]]] = {
+    "win_condition": {
+        "early": ["midfield", "bridge_hold"],
+        "single": ["bridge_hold", "bridge_hold", "midfield"],
+        "double": ["bridge_hold", "pocket_pressure", "midfield"],
+        "triple": ["bridge_hold", "pocket_pressure", "midfield"],
+    },
+    "support": {
+        "early": ["back_safety", "back_support"],
+        "single": ["back_support", "midfield"],
+        "double": ["midfield", "bridge_hold"],
+        "triple": ["midfield", "bridge_hold"],
+    },
+    "spell": {
+        "early": ["bridge_hold"],
+        "single": ["bridge_hold"],
+        "double": ["bridge_hold", "pocket_pressure"],
+        "triple": ["bridge_hold", "pocket_pressure"],
+    },
+    "flex": {
+        "early": ["back_support", "midfield"],
+        "single": ["midfield", "back_support"],
+        "double": ["midfield", "bridge_hold"],
+        "triple": ["midfield", "bridge_hold"],
+    },
+    "unknown": {
+        "early": ["back_support", "back_safety"],
+        "single": ["midfield", "back_support"],
+        "double": ["midfield", "bridge_hold"],
+        "triple": ["midfield", "bridge_hold"],
+    },
+}
+
+ZONE_COORDS: dict[str, dict[str, tuple[tuple[int, int], tuple[int, int]]]] = {
+    "back_safety": {
+        "left": ((70, 180), (430, 465)),
+        "right": ((230, 340), (430, 465)),
+    },
+    "back_support": {
+        "left": ((80, 190), (380, 425)),
+        "right": ((240, 350), (380, 425)),
+    },
+    "midfield": {
+        "left": ((95, 200), (310, 360)),
+        "right": ((255, 360), (310, 360)),
+    },
+    "bridge_hold": {
+        "left": ((115, 185), (260, 310)),
+        "right": ((270, 340), (260, 310)),
+    },
+    "pocket_pressure": {
+        "left": ((130, 210), (290, 340)),
+        "right": ((255, 335), (290, 340)),
+    },
+}
+
 CARD_GROUPS: dict[str, list[str]] = {
     "long_range": [
         "witch",
@@ -4317,6 +4399,83 @@ def get_card_group(card_id) -> str:
     return CARD_TO_GROUP.get(card_id, "No group")
 
 
+def _battle_phase_from_elapsed(elapsed_time: float) -> str:
+    if elapsed_time < 7:
+        return "early"
+    if elapsed_time < 90:
+        return "single"
+    if elapsed_time < 200:
+        return "double"
+    return "triple"
+
+
+def _get_role_for_group(card_grouping: str) -> str:
+    return GROUP_ROLES.get(card_grouping, "unknown")
+
+
+def _select_zone_for_role(role: str, phase: str) -> str:
+    phase_preferences = ROLE_ZONE_PREFERENCES.get(role)
+    if not phase_preferences:
+        phase_preferences = ROLE_ZONE_PREFERENCES["unknown"]
+    zones = phase_preferences.get(phase)
+    if not zones:
+        zones = ROLE_ZONE_PREFERENCES["unknown"].get("single", ["midfield"])
+    return random.choice(zones)
+
+
+def _random_point_from_zone(zone_name: str, side_preference: str) -> tuple[int, int]:
+    zone = ZONE_COORDS.get(zone_name)
+    if not zone:
+        zone = ZONE_COORDS["midfield"]
+
+    lane = zone.get(side_preference)
+    if lane is None:
+        lane = zone.get("left") if random.random() < 0.5 else zone.get("right")
+
+    if lane is None:
+        lane = ZONE_COORDS["midfield"]["left"]
+
+    (x_min, x_max), (y_min, y_max) = lane
+    return (random.randint(x_min, x_max), random.randint(y_min, y_max))
+
+
+def _bias_coords_for_role(
+    coords: list[tuple[int, int]],
+    role: str,
+    phase: str,
+) -> tuple[int, int]:
+    if len(coords) <= 1:
+        return coords[0]
+
+    if role == "win_condition":
+        sorted_coords = sorted(coords, key=lambda coord: coord[1])
+        if phase == "early":
+            pool = sorted_coords[: max(1, len(coords) // 2)]
+        elif phase in {"double", "triple"}:
+            pool = sorted_coords[: max(1, len(coords) - 1)]
+        else:
+            pool = sorted_coords[: max(1, (len(coords) * 2) // 3)]
+    elif role == "support":
+        if phase in {"early", "single"}:
+            sorted_coords = sorted(coords, key=lambda coord: coord[1], reverse=True)
+            pool = sorted_coords[: max(1, len(coords) // 2)]
+        else:
+            sorted_coords = sorted(coords, key=lambda coord: coord[1])
+            pool = sorted_coords[: max(1, (len(coords) * 2) // 3)]
+    elif role == "flex":
+        sorted_coords = sorted(coords, key=lambda coord: coord[1])
+        mid_index = len(sorted_coords) // 2
+        window = max(1, len(sorted_coords) // 2)
+        start = max(0, mid_index - window // 2)
+        pool = sorted_coords[start : start + window]
+        if not pool:
+            pool = sorted_coords
+    else:
+        pool = coords
+
+    return random.choice(pool)
+
+
 def get_play_coords_for_card(
     emulator,
     logger,
@@ -4344,29 +4503,22 @@ def get_play_coords_for_card(
 
 
 def calculate_play_coords(card_grouping: str, side_preference: str, elapsed_time: float = 0):
-    # if there is a dedicated coordinate for this card
-    if card_grouping == "No group":
-        if elapsed_time < 12:  # Less than 5 seconds
-            if side_preference == "left":
-                return (random.randint(60, 206), random.randint(441, 456))
-            return (random.randint(210, 351), random.randint(441, 456))
-        if elapsed_time < 80:  # Less than 2 minutes
-            if side_preference == "left":
-                return (random.randint(60, 206), random.randint(360, 456))
-            return (random.randint(210, 351), random.randint(360, 456))
-        # 2 minutes or more
-        if side_preference == "left":
-            return (random.randint(60, 206), random.randint(281, 456))
-        return (random.randint(210, 351), random.randint(281, 456))
+    phase = _battle_phase_from_elapsed(elapsed_time)
+    role = _get_role_for_group(card_grouping)
 
-    if PLAY_COORDS.get(card_grouping):
+    if card_grouping != "No group" and card_grouping in PLAY_COORDS:
         group_datum = PLAY_COORDS[card_grouping]
-        if side_preference == "left" and "left" in group_datum:
-            return random.choice(group_datum["left"])
-        if side_preference == "right" and "right" in group_datum:
-            return random.choice(group_datum["right"])
-        if "coords" in group_datum:
-            return random.choice(group_datum["coords"])
+        coord_pool: list[tuple[int, int]] = []
+        if side_preference in group_datum:
+            coord_pool = list(group_datum[side_preference])
+        elif "coords" in group_datum:
+            coord_pool = list(group_datum["coords"])
+
+        if coord_pool:
+            return _bias_coords_for_role(coord_pool, role, phase)
+
+    zone_name = _select_zone_for_role(role, phase)
+    return _random_point_from_zone(zone_name, side_preference)
 
 
 bridge_iar = 0
