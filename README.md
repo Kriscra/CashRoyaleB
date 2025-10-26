@@ -134,3 +134,33 @@ This tool is designed for educational and automation purposes. Please ensure you
 **Made with ❤️ by the py-clash-bot community**
 
 _Automate your Clash Royale experience and focus on what matters most - strategy and fun!_
+
+## 🏗️ Building the Windows installer yourself
+
+If you want to generate the standalone `.exe`/`.msi` bundle locally instead of
+downloading a prebuilt release, make sure the `uv` build tool is available in
+your shell. The error message below means `uv` has not been installed yet:
+
+```
+uv : The term 'uv' is not recognized as the name of a cmdlet, function,
+script file, or operable program.
+```
+
+You can install `uv` with any of the following options:
+
+- **pipx (recommended):** `pipx install uv`
+- **Python pip:** `python -m pip install uv`
+- **Standalone installer:** download the latest release from
+  [https://github.com/astral-sh/uv/releases](https://github.com/astral-sh/uv/releases)
+  and add it to your `PATH`.
+
+Once `uv` is available, run these commands in a Windows terminal from the
+repository root to produce the installer files:
+
+```powershell
+uv sync --group build
+uv run --group build .\scripts\setup_msi.py bdist_msi
+```
+
+The resulting artifacts will be written to the `dist/` directory
+(`py-clash-bot.exe` and `py-clash-bot-<version>.msi`).
