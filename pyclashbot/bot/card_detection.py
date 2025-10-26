@@ -164,6 +164,76 @@ ROLE_ZONE_PREFERENCES: dict[str, dict[str, list[str]]] = {
     },
 }
 
+INTENT_ZONE_PREFERENCES: dict[str, dict[str, list[str]]] = {
+    "win_condition": {
+        "attack": ["bridge_hold", "pocket_pressure", "midfield"],
+        "defend": ["midfield", "back_support", "back_safety"],
+        "wait": ["midfield", "bridge_hold"],
+    },
+    "support": {
+        "attack": ["midfield", "bridge_hold"],
+        "defend": ["back_support", "back_safety", "midfield"],
+        "wait": ["back_support", "midfield"],
+    },
+    "spell": {
+        "attack": ["bridge_hold", "pocket_pressure"],
+        "defend": ["midfield", "bridge_hold"],
+        "wait": ["bridge_hold", "midfield"],
+    },
+    "flex": {
+        "attack": ["midfield", "bridge_hold", "pocket_pressure"],
+        "defend": ["back_support", "midfield"],
+        "wait": ["midfield", "back_support"],
+    },
+    "unknown": {
+        "attack": ["midfield", "bridge_hold"],
+        "defend": ["back_support", "back_safety"],
+        "wait": ["midfield", "back_support"],
+    },
+}
+
+LANE_X_BOUNDS: dict[str, tuple[int, int]] = {
+    "left": (70, 210),
+    "right": (250, 360),
+}
+
+LANE_CENTERS: dict[str, int] = {
+    "left": 150,
+    "right": 300,
+}
+
+BOARD_Y_BOUNDS: tuple[int, int] = (80, 460)
+
+INTENT_Y_BANDS: dict[str, dict[str, tuple[int, int]]] = {
+    "attack": {
+        "win_condition": (175, 240),
+        "support": (215, 300),
+        "spell": (150, 250),
+        "flex": (200, 300),
+        "unknown": (205, 315),
+    },
+    "defend": {
+        "win_condition": (320, 390),
+        "support": (360, 440),
+        "spell": (320, 390),
+        "flex": (340, 420),
+        "unknown": (340, 430),
+    },
+    "wait": {
+        "win_condition": (260, 320),
+        "support": (320, 380),
+        "spell": (260, 320),
+        "flex": (280, 340),
+        "unknown": (300, 360),
+    },
+}
+
+INTENT_X_VARIANCE: dict[str, int] = {
+    "attack": 26,
+    "defend": 22,
+    "wait": 24,
+}
+
 ZONE_COORDS: dict[str, dict[str, tuple[tuple[int, int], tuple[int, int]]]] = {
     "back_safety": {
         "left": ((70, 180), (430, 465)),
@@ -4464,7 +4534,18 @@ def _random_point_from_zone(zone_name: str, side_preference: str) -> tuple[int, 
         lane = ZONE_COORDS["midfield"]["left"]
 
     (x_min, x_max), (y_min, y_max) = lane
-    return (random.randint(x_min, x_max), random.randint(y_min, y_max))
+
+    x_mid = (x_min + x_max) / 2
+    x_sigma = max(4.0, (x_max - x_min) / 4)
+    x_coord = int(random.gauss(x_mid, x_sigma))
+    x_coord = max(min(x_coord, x_max), x_min)
+
+    y_mid = (y_min + y_max) / 2
+    y_sigma = max(5.0, (y_max - y_min) / 4)
+    y_coord = int(random.gauss(y_mid, y_sigma))
+    y_coord = max(min(y_coord, y_max), y_min)
+
+    return (x_coord, y_coord)
 
 
 def _bias_coords_for_role(
@@ -4528,8 +4609,13 @@ def get_play_coords_for_card(
 
     # get the play coords of this grouping
     side_preference = lane_override or play_side
-    coords = calculate_play_coords(group, side_preference, elapsed_time)
-    coords = _adjust_coord_for_intent(coords, intent, group)
+    coords = calculate_play_coords(
+        group,
+        side_preference,
+        elapsed_time,
+        intent=intent,
+    )
+    coords = _adjust_coord_for_intent(coords, intent, group, side_preference)
 
     return identity, coords
 
@@ -4538,6 +4624,7 @@ def calculate_play_coords(
     card_grouping: str,
     side_preference: str,
     elapsed_time: float = 0,
+    intent: str | None = None,
 ):
     phase = _battle_phase_from_elapsed(elapsed_time)
     role = _get_role_for_group(card_grouping)
@@ -4553,12 +4640,30 @@ def calculate_play_coords(
         if coord_pool:
             return _bias_coords_for_role(coord_pool, role, phase)
 
+    zone_sequence: list[str] = []
+    if intent:
+        intent_zones = INTENT_ZONE_PREFERENCES.get(role, INTENT_ZONE_PREFERENCES["unknown"])
+        zone_sequence.extend(intent_zones.get(intent, []))
+
+    default_zones = ROLE_ZONE_PREFERENCES.get(role) or ROLE_ZONE_PREFERENCES["unknown"]
+    zone_sequence.extend(default_zones.get(phase, []))
+
+    if not zone_sequence:
+        zone_sequence.append(_select_zone_for_role(role, phase))
+
+    for zone_name in zone_sequence:
+        if not zone_name:
+            continue
+        point = _random_point_from_zone(zone_name, side_preference)
+        if point:
+            return point
+
     zone_name = _select_zone_for_role(role, phase)
     return _random_point_from_zone(zone_name, side_preference)
 
 
 def _adjust_coord_for_intent(
-    coord: tuple[int, int], intent: str | None, card_grouping: str
+    coord: tuple[int, int], intent: str | None, card_grouping: str, lane: str
 ) -> tuple[int, int]:
     if not intent:
         return coord
@@ -4566,20 +4671,29 @@ def _adjust_coord_for_intent(
     role = _get_role_for_group(card_grouping)
     x, y = coord
 
-    if intent == "defend":
-        if y < 330:
-            y = 330
-        else:
-            y = min(y + 25, 545)
-        if role in {"spell", "support"}:
-            y = min(y + 15, 560)
-    elif intent == "attack":
-        if y > 250:
-            y = max(y - 30, 120)
-        else:
-            y = max(y - 15, 80)
-        if role == "win_condition":
-            y = max(y - 15, 70)
+    lane = lane if lane in LANE_X_BOUNDS else "left"
+    lane_bounds = LANE_X_BOUNDS[lane]
+    lane_center = LANE_CENTERS[lane]
+
+    role_bands = INTENT_Y_BANDS.get(intent) or INTENT_Y_BANDS["wait"]
+    band = role_bands.get(role) or role_bands.get("unknown")
+    if band:
+        target_y = random.uniform(*band)
+        y = int(round((y * 0.35) + (target_y * 0.65)))
+
+    y = max(min(y, BOARD_Y_BOUNDS[1]), BOARD_Y_BOUNDS[0])
+
+    spread = INTENT_X_VARIANCE.get(intent, 24)
+    target_x = random.gauss(lane_center, spread)
+    if role == "support" and intent == "defend":
+        spread = max(10, spread - 6)
+        target_x = random.gauss(lane_center, spread)
+    elif role == "win_condition" and intent == "attack":
+        offset = -12 if lane == "left" else 12
+        target_x += offset
+
+    x = int(round((x * 0.4) + (target_x * 0.6)))
+    x = max(min(x, lane_bounds[1]), lane_bounds[0])
 
     return (x, y)
 
